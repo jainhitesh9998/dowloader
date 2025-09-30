@@ -1,0 +1,128 @@
+name: Download & Publish Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Direct download URL to the file"
+        required: true
+        type: string
+      filename:
+        description: "Optional local filename (if omitted, use server/URL name)"
+        required: false
+        type: string
+      artifact_name:
+        description: "Name for the uploaded workflow artifact"
+        required: false
+        default: downloaded-file
+        type: string
+      headers:
+        description: |
+          Optional extra request headers (one per line), e.g.:
+          Authorization: Bearer <token>
+          User-Agent: MyAgent/1.0
+        required: false
+        type: string
+      retention_days:
+        description: "How many days to keep the artifact"
+        required: false
+        default: "7"
+        type: string
+      insecure:
+        description: "Set to true to allow insecure TLS (NOT recommended)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      ignore_http_errors:
+        description: "Set to true to NOT fail on non-2xx HTTP responses"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+jobs:
+  fetch-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare workspace
+        run: |
+          set -euo pipefail
+          mkdir -p download
+          echo "Inputs received:"
+          echo "  URL: ${{ inputs.url }}"
+          echo "  Filename: ${{ inputs.filename }}"
+          echo "  Artifact: ${{ inputs.artifact_name }}"
+          echo "  Retention days: ${{ inputs.retention_days }}"
+          echo "  Insecure TLS: ${{ inputs.insecure }}"
+          echo "  Ignore HTTP errors: ${{ inputs.ignore_http_errors }}"
+
+      - name: Download file
+        id: dl
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd download
+
+          # Build curl flags
+          CURL_FLAGS=(-L --fail-with-body -S --show-error --progress-bar)
+          # Allow insecure TLS if requested (NOT recommended)
+          if [[ "${{ inputs.insecure }}" == "true" ]]; then
+            CURL_FLAGS+=(-k)
+          fi
+          # If user wants to ignore HTTP errors, drop --fail-with-body
+          if [[ "${{ inputs.ignore_http_errors }}" == "true" ]]; then
+            # Rebuild without the fail flag
+            CURL_FLAGS=(-L -S --show-error --progress-bar)
+          fi
+
+          # Inject custom headers (one per line)
+          if [[ -n "${{ inputs.headers }}" ]]; then
+            # Split on newlines safely and add -H for each header
+            while IFS= read -r line; do
+              [[ -z "$line" ]] && continue
+              CURL_FLAGS+=(-H "$line")
+            done <<< "${{ inputs.headers }}"
+          fi
+
+          URL="${{ inputs.url }}"
+          USER_FILE="${{ inputs.filename }}"
+
+          # If a filename is provided, write to that; otherwise, trust server/URL name.
+          if [[ -n "$USER_FILE" ]]; then
+            echo "Downloading to specified filename: $USER_FILE"
+            curl "${CURL_FLAGS[@]}" -o "$USER_FILE" "$URL"
+            DL_FILE="$USER_FILE"
+          else
+            # -OJ = use server-provided Content-Disposition filename if present, else URL basename
+            echo "No filename provided; using server/URL name via -OJ"
+            curl "${CURL_FLAGS[@]}" -OJ "$URL"
+            # Determine the most recently modified file in this directory
+            DL_FILE="$(ls -1t | head -n1)"
+          fi
+
+          if [[ ! -s "$DL_FILE" ]]; then
+            echo "::error::Downloaded file is missing or empty."
+            exit 1
+          fi
+
+          # Expose the resolved filename as an output
+          echo "file=$DL_FILE" >> "$GITHUB_OUTPUT"
+          echo "::notice::Downloaded file: $DL_FILE"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: download/${{ steps.dl.outputs.file }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+      - name: Summary
+        run: |
+          echo "### ✅ Artifact published" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** \`${{ inputs.url }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Saved as:** \`${{ steps.dl.outputs.file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact name:** \`${{ inputs.artifact_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Retention:** \`${{ inputs.retention_days }} days\`" >> $GITHUB_STEP_SUMMARY
