@@ -1,0 +1,82 @@
+name: Retag & Publish Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_image:
+        description: "Image to pull (e.g. library/nginx:1.27, or ghcr.io/org/app:tag)"
+        required: true
+      target_registry:
+        description: "Target registry (ghcr.io or docker.io)"
+        required: true
+        default: "ghcr.io"
+      target_namespace:
+        description: "Target namespace/org/user (defaults to repo owner)"
+        required: false
+      target_repo:
+        description: "Target image name/repo (defaults to this repo name)"
+        required: false
+
+permissions:
+  contents: read
+  packages: write   # needed for GHCR pushes
+
+jobs:
+  republish:
+    runs-on: ubuntu-latest
+    env:
+      SRC: ${{ github.event.inputs.source_image }}
+      TARGET_REG: ${{ github.event.inputs.target_registry }}
+      TARGET_NS: ${{ github.event.inputs.target_namespace || github.repository_owner }}
+      TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.repository.split('/')[1] }}
+
+    steps:
+      - name: Derive tag from source
+        id: parse
+        run: |
+          # Extract tag (default latest if none)
+          if [[ "$SRC" == *:* ]]; then
+            TAG="${SRC##*:}"
+          else
+            TAG="latest"
+            SRC="$SRC:$TAG"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using source image: $SRC"
+          echo "Tag resolved: $TAG"
+
+      - name: Log in to GHCR (if selected)
+        if: ${{ env.TARGET_REG == 'ghcr.io' }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Log in to Docker Hub (if selected)
+        if: ${{ env.TARGET_REG == 'docker.io' }}
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Pull source image
+        run: docker pull "$SRC"
+
+      - name: Tag for target
+        run: |
+          TARGET_REF="${TARGET_REG}/${TARGET_NS}/${TARGET_REPO}:${{ steps.parse.outputs.tag }}"
+          echo "TARGET_REF=$TARGET_REF" >> "$GITHUB_ENV"
+          docker tag "$SRC" "$TARGET_REF"
+
+      - name: Push to target
+        run: docker push "$TARGET_REF"
+
+      # ------- Optional: Make GHCR package public (first time only) -------
+      # This usually requires the package to exist already. If it stays private,
+      # go to: GitHub > Your profile/org > Packages > (image) > Package settings > Change visibility to Public.
+      # You can try auto-flipping with gh cli (works for many setups):
+      # - uses: actions/setup-gh-cli@v2
+      # - name: Make public on GHCR
+      #   if: ${{ env.TARGET_REG == 'ghcr.io' }}
+      #   run: |
+      #     NAME="${TARGET_NS}/${TARGET_REPO}"
+      #     gh api \
+      #       -X PUT \
+      #       -H "Accept: application/vnd.github+json" \
+      #       "/orgs/${TARGET_NS}/packages/container/${TARGET_REPO}/visibility" \
+      #       -f visibility=public || true
+      # --------------------------------------------------------------------
