@@ -27,7 +27,7 @@ jobs:
       SRC: ${{ github.event.inputs.source_image }}
       TARGET_REG: ${{ github.event.inputs.target_registry }}
       TARGET_NS: ${{ github.event.inputs.target_namespace || github.repository_owner }}
-      TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.repository.split('/')[1] }}
+      TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.repository.name }}
 
     steps:
       - name: Derive tag from source
