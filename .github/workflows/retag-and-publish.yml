@@ -1,5 +1,4 @@
 name: Retag & Publish Docker Image
-
 on:
   workflow_dispatch:
     inputs:
